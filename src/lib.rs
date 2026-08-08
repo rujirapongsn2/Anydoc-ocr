@@ -16,6 +16,11 @@ mod shared;
 
 pub use error::ConvertError;
 
+// Re-export the OCR types so callers don't need to reach into `formats`.
+#[cfg(feature = "ocr-tesseract")]
+pub use formats::pdf::TesseractOcr;
+pub use formats::pdf::ocr::{OcrEngine, OcrError};
+
 use render::markdown::document_to_markdown;
 
 use std::path::Path;
@@ -135,6 +140,36 @@ pub fn to_document(
     format: impl Into<Option<Format>>,
 ) -> Result<model::Document, ConvertError> {
     formats::parse(bytes, resolve_format(bytes, format.into())?)
+}
+
+/// Convert a document to Markdown with optional OCR fallback for scanned PDFs.
+///
+/// When the input is a PDF with pages that have no text layer (scanned or
+/// image-only), and `ocr_engine` is `Some`, those pages are rendered to images
+/// and run through the provided [`OcrEngine`]. Recognized text is inserted into
+/// the Markdown at the page boundary.
+///
+/// For all non-PDF formats, the `ocr_engine` is ignored and the function
+/// behaves identically to [`to_markdown_bytes`].
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use anydoc::TesseractOcr;
+///
+/// let ocr = TesseractOcr::english();
+/// let markdown = anydoc::to_markdown_with_ocr(bytes, None, Some(&ocr))?;
+/// ```
+pub fn to_markdown_with_ocr(
+    bytes: &[u8],
+    format: impl Into<Option<Format>>,
+    ocr_engine: Option<&dyn OcrEngine>,
+) -> Result<String, ConvertError> {
+    let format = resolve_format(bytes, format.into())?;
+    if format == Format::Pdf {
+        return formats::pdf::to_markdown_with_ocr(bytes, ocr_engine);
+    }
+    Ok(document_to_markdown(&to_document(bytes, format)?))
 }
 
 fn resolve_format(bytes: &[u8], format: Option<Format>) -> Result<Format, ConvertError> {

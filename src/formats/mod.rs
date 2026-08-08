@@ -6,7 +6,7 @@ mod doc;
 mod docx;
 mod epub;
 mod odf;
-pub mod pdf;
+pub mod pdf; // pub so OcrEngine is reachable
 mod ppt;
 mod pptx;
 mod rtf;

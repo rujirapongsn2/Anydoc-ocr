@@ -5,6 +5,8 @@ const { readFile, writeFile } = require('node:fs/promises')
 
 const FORMATS = 'doc, docx, odt, pdf, ppt, pptx, rtf, epub, xlsx, ods, odp, csv'
 
+const OCR_BACKENDS = 'tesseract, auto, none'
+
 const HELP = `anydoc: convert documents to GitHub-Flavored Markdown
 
 Usage:
@@ -21,13 +23,20 @@ Options:
                          ${FORMATS}
                          (extension aliases like xls, docm, ppsx resolve
                          to these)
+  --ocr <backend>        OCR fallback for scanned/image-only PDFs:
+                         ${OCR_BACKENDS}
+                         (default: none)
   -h, --help             Print this help and exit
   -V, --version          Print the version and exit
 
 The format is detected from the file content; the file extension is the
 fallback for signature-less formats (CSV). stdin has no extension, so CSV
-input from stdin needs --format csv. Scanned or image-only PDFs need OCR,
-which anydoc does not do, and error as unsupported.
+input from stdin needs --format csv.
+
+When --ocr is set, pages that pdf-inspector flags as having no text layer
+are rendered to images and run through the specified OCR backend.
+'auto' picks the first available engine. Text-based PDFs are never sent
+through OCR, so the fast path stays fast.
 
 Exit codes:
   0  success
@@ -38,7 +47,8 @@ Examples:
   anydoc report.docx
   anydoc slides.pptx -o slides.md
   anydoc - --format csv < data.csv
-  curl -s https://example.com/paper.pdf | anydoc -
+  anydoc scanned.pdf --ocr tesseract
+  curl -s https://example.com/paper.pdf | anydoc - --ocr auto
 `
 
 const USAGE_ERROR = 2
@@ -50,7 +60,7 @@ function fail(code, message) {
 }
 
 function parseArgs(argv) {
-  const args = { input: null, output: null, format: null }
+  const args = { input: null, output: null, format: null, ocr: null }
   let positionalOnly = false
   for (let i = 0; i < argv.length; i++) {
     let arg = argv[i]
@@ -95,6 +105,9 @@ function parseArgs(argv) {
       case '--format':
         args.format = value()
         break
+      case '--ocr':
+        args.ocr = value()
+        break
       default:
         fail(USAGE_ERROR, `unknown option '${arg}' (see anydoc --help)`)
     }
@@ -121,7 +134,7 @@ async function main() {
 
   // Loaded after argument handling so --help and --version work even where
   // no native binding is available.
-  const { formatFromExtension, toMarkdown, toMarkdownBytes } = require('./index.js')
+  const { formatFromExtension, toMarkdown, toMarkdownBytes, toMarkdownWithOcr } = require('./index.js')
 
   let format
   if (args.format !== null) {
@@ -131,14 +144,35 @@ async function main() {
     }
   }
 
+  // Validate --ocr value
+  const validOcr = ['tesseract', 'auto', 'none', null]
+  if (!validOcr.includes(args.ocr)) {
+    fail(USAGE_ERROR, `invalid --ocr '${args.ocr}'; expected one of: ${OCR_BACKENDS}`)
+  }
+
+  // Read input bytes
+  let bytes
+  if (args.input === '-') {
+    bytes = await readStdin()
+  } else {
+    bytes = await readFile(args.input)
+  }
+
   let markdown
   try {
-    if (args.input === '-') {
-      markdown = await toMarkdownBytes(await readStdin(), format)
-    } else if (format !== undefined) {
-      markdown = await toMarkdownBytes(await readFile(args.input), format)
-    } else {
+    if (args.ocr && args.ocr !== 'none') {
+      // OCR fallback path: the native module exposes toMarkdownWithOcr
+      // which takes (bytes, format, ocrBackend) and handles the rest.
+      if (typeof toMarkdownWithOcr !== 'function') {
+        fail(USAGE_ERROR,
+          `--ocr is not supported by this build of anydoc. ` +
+          `Rebuild with: cargo build --features ocr-tesseract`)
+      }
+      markdown = await toMarkdownWithOcr(bytes, format, args.ocr)
+    } else if (args.input !== '-' && format === undefined) {
       markdown = await toMarkdown(args.input)
+    } else {
+      markdown = await toMarkdownBytes(bytes, format)
     }
   } catch (error) {
     fail(CONVERSION_ERROR, error.message)

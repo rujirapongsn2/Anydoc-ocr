@@ -32,6 +32,22 @@ pdf-inspector = "0.1.7"
 quick-xml = "0.41.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
+# tempfile is a build-time dependency of the ocr-tesseract feature, but
+# placing it here keeps the default build unchanged (it compiles fast and
+# is only referenced behind a feature gate).
+tempfile = { version = "3", optional = true }
+
+[features]
+default = []
+# OCR fallback for scanned/image-only PDFs.
+# Enables the OcrEngine trait and the TesseractOcr backend.
+# Requires: `brew install tesseract` (macOS) or `apt install tesseract-ocr` (Linux).
+ocr-tesseract = ["dep:tempfile"]
+# Reserved for future backends.
+ocr-paddle = []
+# Use pdf-inspector's native page renderer instead of shelling out to pdftoppm.
+pdf-render = []
+
 [profile.release]
 lto = "thin"
 strip = "symbols"
