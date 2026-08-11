@@ -28,6 +28,7 @@ from anydoc._anydoc import (
     to_document,
     to_markdown,
     to_markdown_bytes,
+    to_markdown_with_ocr,
 )
 
 Format = Literal[
@@ -64,4 +65,5 @@ __all__ = [
     "to_document",
     "to_markdown",
     "to_markdown_bytes",
+    "to_markdown_with_ocr",
 ]

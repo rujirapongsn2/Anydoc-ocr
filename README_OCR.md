@@ -108,6 +108,37 @@ pub trait OcrEngine: Send + Sync {
 
 Implement this to use any OCR library as a backend.
 
+### Python
+
+#### `to_markdown_with_ocr(data, format=None, ocr=None)`
+
+```python
+import io
+
+import anydoc
+import pytesseract
+from PIL import Image
+
+
+def recognize(image: bytes, page: int) -> str:
+    return pytesseract.image_to_string(Image.open(io.BytesIO(image)), lang="eng+tha")
+
+
+markdown = anydoc.to_markdown_with_ocr(open("scanned.pdf", "rb").read(), "pdf", recognize)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `data` | `bytes` | Document file bytes |
+| `format` | `str \| None` | Format hint; `None` = auto-detect |
+| `ocr` | `Callable[[bytes, int], str] \| None` | OCR backend; `None` = no OCR (original behavior) |
+
+The callback stands in for the `OcrEngine` trait: it takes the page rendered
+to PNG bytes and its 1-based number, returns the text, returns `""` to leave
+the page as it was, and raises to abort the conversion. No feature flag is
+needed — the backend lives on the Python side. See the [Python Developer
+Guide](#-python-developer-guide) below.
+
 ### CLI
 
 ```bash
@@ -155,8 +186,8 @@ apt install tesseract-ocr-tha
 # From source (Rust)
 cargo build --release --features ocr-tesseract
 
-# Python (future)
-pip install firecrawl-anydoc[ocr]
+# Python — the OCR backend is a callback, so no feature flag is involved
+pip install firecrawl-anydoc pytesseract pillow
 
 # Node.js (future)
 npm install @firecrawl/anydoc --build-from-source --features ocr-tesseract
@@ -666,178 +697,99 @@ for asset in document.assets:
 
 ### การใช้งาน OCR สำหรับ Scanned PDF
 
-เนื่องจาก Python bindings ของ anydoc ยังไม่เปิดเผย `to_markdown_with_ocr()`
-โดยตรง นักพัฒนา Python สามารถใช้ OCR ได้ 2 วิธี:
-
----
-
-### วิธีที่ 1: ใช้ Anydoc CLI ผ่าน subprocess (แนะนำ)
-
-วิธีที่ง่ายที่สุด — เรียก CLI ที่มี OCR feature อยู่แล้ว:
+`anydoc.to_markdown_with_ocr()` ให้คุณเสียบ OCR backend อะไรก็ได้เข้ามาเอง —
+anydoc เป็นฝ่ายตัดสินว่าหน้าไหน "ต้อง" OCR แล้ว render หน้านั้นเป็น PNG ส่งเข้า
+callback ของคุณ:
 
 ```python
-import subprocess
-import shutil
-from pathlib import Path
+import anydoc
 
 
-def convert_with_ocr(pdf_path: str, ocr_backend: str = "tesseract") -> str:
-    """แปลง PDF เป็น Markdown ด้วย OCR fallback
-
-    Args:
-        pdf_path: ที่อยู่ไฟล์ PDF
-        ocr_backend: "tesseract" | "auto" | "none"
-
-    Returns:
-        Markdown string
-
-    Raises:
-        FileNotFoundError: anydoc CLI ไม่ได้ติดตั้ง
-        RuntimeError: การแปลงล้มเหลว
-    """
-    # หา anydoc CLI
-    anydoc_bin = shutil.which("anydoc")
-    if anydoc_bin is None:
-        # ลองใช้ npx
-        anydoc_bin = "npx"
-        prefix = ["npx", "@firecrawl/anydoc"]
-    else:
-        prefix = [anydoc_bin]
-
-    result = subprocess.run(
-        prefix + [pdf_path, "--ocr", ocr_backend],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"anydoc failed (exit {result.returncode}): {result.stderr.strip()}"
-        )
-
-    return result.stdout
+def recognize(image: bytes, page: int) -> str:
+    """image = PNG ของหน้านั้น (300 DPI), page = เลขหน้าเริ่มจาก 1"""
+    return "ข้อความที่อ่านได้จากหน้านั้น"
 
 
-# ใช้งาน
-markdown = convert_with_ocr("scanned.pdf", ocr_backend="tesseract")
-print(markdown)
-
-# หรือแปลงแล้วเซฟลงไฟล์
-result = subprocess.run(
-    ["anydoc", "scanned.pdf", "--ocr", "tesseract", "-o", "output.md"],
-    capture_output=True,
-)
+markdown = anydoc.to_markdown_with_ocr(pdf_bytes, "pdf", recognize)
 ```
 
+กติกาที่ควรรู้:
+
+| เรื่อง | พฤติกรรม |
+|--------|-----------|
+| หน้าที่ text layer ใช้ได้อยู่แล้ว | **ไม่ถูกส่งเข้า callback** — PDF ปกติจึงเร็วเท่า `to_markdown_bytes()` |
+| หน้าที่ถูกส่งเข้ามา | หน้า scan / ไม่มี text layer และหน้าที่ฟอนต์ไทยแมปเพี้ยน (`ที่` ออกมาเป็น `ที&`) |
+| callback คืน `""` | ปล่อยหน้านั้นไว้ตามเดิม ไม่มีอะไรหาย |
+| callback `raise` | ยกเลิกทั้งงานพร้อม exception ของคุณ (ไม่ถูกกลืนเงียบ) |
+| ไม่ส่ง `ocr` | เท่ากับ `to_markdown_bytes()` ทุกประการ |
+| การ render | ใช้ `pdftoppm` (poppler) ถ้าไม่มีใน `PATH` หน้านั้นจะถูกข้ามไปเฉยๆ |
+| ไฟล์ที่ไม่ใช่ PDF | `ocr` ถูกเพิกเฉย |
+
 ---
 
-### วิธีที่ 2: ใช้ Python OCR Library โดยตรง (Pure Python)
-
-วิธีนี้ไม่ต้องใช้ CLI ควบคุมได้ทุกขั้นตอนจาก Python:
+### วิธีที่ 1: pytesseract (local, ฟรี — แนะนำสำหรับเริ่มต้น)
 
 ```python
+import io
+
 import anydoc
 import pytesseract
 from PIL import Image
-import io
-import tempfile
-import subprocess
 
 
-def pdf_to_markdown_with_ocr(pdf_path: str, lang: str = "eng+tha") -> str:
-    """แปลง PDF เป็น Markdown ถ้าเป็น scanned PDF จะใช้ OCR
+def tesseract_ocr(lang: str = "eng+tha"):
+    """สร้าง OCR callback ที่ใช้ Tesseract ผ่าน pytesseract"""
 
-    Args:
-        pdf_path: ที่อยู่ไฟล์ PDF
-        lang: รหัสภาษา Tesseract ("eng", "tha", "eng+tha")
+    def recognize(image: bytes, page: int) -> str:
+        return pytesseract.image_to_string(Image.open(io.BytesIO(image)), lang=lang)
 
-    Returns:
-        Markdown string
-    """
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
-
-    # ลองแปลงด้วย anydoc ก่อน (เร็วมาก)
-    try:
-        return anydoc.to_markdown(pdf_path)
-    except anydoc.UnsupportedError as e:
-        if "OCR" not in str(e):
-            raise  # ถ้าไม่ใช่เรื่อง OCR ให้ throw ต่อ
-
-    # anydoc บอกว่าต้องใช้ OCR → เรียก OCR เอง
-    print(f"PDF needs OCR, running Tesseract (lang={lang})...")
-
-    # แปลง PDF เป็นรูปภาพด้วย pdftoppm
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # render แต่ละหน้าเป็น PNG ที่ 300 DPI
-        subprocess.run(
-            ["pdftoppm", "-png", "-r", "300", pdf_path,
-             f"{tmpdir}/page"],
-            check=True,
-            capture_output=True,
-        )
-
-        # OCR แต่ละหน้า
-        pages = sorted(Path(tmpdir).glob("page-*.png"))
-        markdown_parts = []
-
-        for i, page_img in enumerate(pages, 1):
-            image = Image.open(page_img)
-            text = pytesseract.image_to_string(image, lang=lang)
-
-            if text.strip():
-                markdown_parts.append(f"<!-- OCR: page {i} -->\n\n{text}")
-
-    return "\n\n".join(markdown_parts)
+    return recognize
 
 
-# ใช้งาน
-markdown = pdf_to_markdown_with_ocr("scanned.pdf", lang="tha+eng")
+pdf_bytes = open("scanned.pdf", "rb").read()
+markdown = anydoc.to_markdown_with_ocr(pdf_bytes, "pdf", tesseract_ocr("tha+eng"))
+print(markdown)
+```
+
+ตัวอย่างผลลัพธ์จริงกับหนังสือรับรองการหักภาษี ณ ที่จ่าย ที่ฟอนต์แมปเพี้ยน:
+
+```text
+# text layer เดิม (อ่านได้แต่ผิด)
+ฉบับที& 1 (สําหรับผู้ถูกหักภาษี ณ ที&จ่าย ...)
+
+# หลังผ่าน to_markdown_with_ocr()
+ฉบับที 1 ( สําหรับผู้ถูกหักภาษี ณ ที่จ่าย ... )
 ```
 
 ---
 
-### วิธีที่ 3: ใช้ Cloud OCR API จาก Python
+### วิธีที่ 2: Cloud OCR API (Mistral / Softnix)
+
+callback เป็นแค่ฟังก์ชันธรรมดา จึงยิง HTTP ออกไปได้ตรงๆ:
 
 ```python
 import anydoc
+
+
+def cloud_ocr(provider: str = "mistral"):
+    def recognize(image: bytes, page: int) -> str:
+        return call_cloud_ocr(image, provider)
+
+    return recognize
+
+
+markdown = anydoc.to_markdown_with_ocr(pdf_bytes, "pdf", cloud_ocr("softnix"))
+```
+
+<details>
+<summary><code>call_cloud_ocr</code> — Mistral OCR และ Softnix OCR V3</summary>
+
+```python
 import base64
 import json
+import os
 import time
 import urllib.request
-import os
-
-
-def pdf_to_markdown_cloud_ocr(pdf_path: str, provider: str = "mistral") -> str:
-    """แปลง scanned PDF โดยใช้ Cloud OCR API
-
-    Args:
-        pdf_path: ที่อยู่ไฟล์ PDF
-        provider: "mistral" | "softnix"
-
-    Returns:
-        Markdown string
-    """
-    with open(pdf_path, "rb") as f:
-        pdf_bytes = f.read()
-
-    # ลองแปลงด้วย anydoc ก่อน
-    try:
-        return anydoc.to_markdown(pdf_path)
-    except anydoc.UnsupportedError:
-        pass  # ต้องใช้ OCR
-
-    # render PDF เป็นรูปภาพ (ต้องมี pdftoppm หรือ PyMuPDF)
-    images = render_pdf_to_images(pdf_bytes)
-
-    # ส่งรูปภาพไปยัง Cloud OCR API
-    markdown_parts = []
-    for i, img_bytes in enumerate(images, 1):
-        text = call_cloud_ocr(img_bytes, provider)
-        if text.strip():
-            markdown_parts.append(f"<!-- OCR: page {i} -->\n\n{text}")
-
-    return "\n\n".join(markdown_parts)
 
 
 def call_cloud_ocr(image_bytes: bytes, provider: str) -> str:
@@ -947,176 +899,100 @@ def call_softnix_ocr(image_bytes: bytes, poll_interval: float = 0.5, timeout: fl
     if not text:
         raise RuntimeError(f"Softnix result had no content/ocr_text: {result}")
     return text
+```
 
+</details>
 
-def render_pdf_to_images(pdf_bytes: bytes) -> list[bytes]:
-    """แปลง PDF แต่ละหน้าเป็น PNG bytes"""
-    import tempfile
-    import subprocess
-    from pathlib import Path
+หมายเหตุ: callback ถูกเรียกทีละหน้าตามลำดับ ถ้า OCR ปลายทางช้าและเอกสารหนา ให้
+กันโควตา/ตั้ง timeout ไว้ในตัว callback เอง และถ้าอยากให้หน้าที่ยิงไม่ผ่าน "ข้าม"
+แทนที่จะล้มทั้งงาน ให้ `try/except` แล้วคืน `""`:
 
-    images = []
-    with tempfile.TemporaryDirectory() as tmpdir:
-        pdf_path = Path(tmpdir) / "input.pdf"
-        pdf_path.write_bytes(pdf_bytes)
-
-        subprocess.run(
-            ["pdftoppm", "-png", "-r", "300", str(pdf_path), f"{tmpdir}/page"],
-            check=True,
-            capture_output=True,
-        )
-
-        for png in sorted(Path(tmpdir).glob("page-*.png")):
-            images.append(png.read_bytes())
-
-    return images
-
-
-# ใช้งาน
-markdown = pdf_to_markdown_cloud_ocr("scanned.pdf", provider="softnix")
+```python
+def resilient(image: bytes, page: int) -> str:
+    try:
+        return call_cloud_ocr(image, "softnix")
+    except Exception as e:
+        print(f"page {page} OCR failed: {e}")
+        return ""   # ปล่อยหน้านั้นไว้ตามเดิม แล้วไปหน้าถัดไป
 ```
 
 ---
 
-### Python Wrapper Class (ครบทุกฟีเจอร์)
+### วิธีที่ 3: เรียก CLI ผ่าน subprocess
 
-โค้ดทั้งหมดรวมในคลาสเดียว พร้อมใช้งาน:
+ใช้เมื่อไม่อยากผูกกับ Python binding เลย (เช่น รันคนละ container กัน):
 
 ```python
-import anydoc
-import shutil
 import subprocess
-import tempfile
+
+
+def convert_with_cli(pdf_path: str, ocr_backend: str = "tesseract") -> str:
+    result = subprocess.run(
+        ["anydoc", pdf_path, "--ocr", ocr_backend],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"anydoc failed (exit {result.returncode}): {result.stderr.strip()}")
+    return result.stdout
+```
+
+---
+
+### Python Wrapper Class
+
+```python
+import io
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Callable, Optional
+
+import anydoc
 
 
 class AnydocConverter:
-    """แปลงเอกสารเป็น Markdown รองรับ OCR สำหรับ scanned PDF
+    """แปลงเอกสารเป็น Markdown พร้อม OCR fallback สำหรับ scanned PDF
 
     Example:
-        converter = AnydocConverter(ocr_backend="tesseract", lang="tha+eng")
+        converter = AnydocConverter(ocr=tesseract_ocr("tha+eng"))
         md = converter.convert("document.pdf")
     """
 
-    def __init__(
-        self,
-        ocr_backend: Literal["tesseract", "auto", "none", "python"] = "none",
-        lang: str = "eng",
-        cli_path: Optional[str] = None,
-    ):
-        """
-        Args:
-            ocr_backend:
-                "tesseract" - ใช้ Tesseract ผ่าน CLI
-                "auto"      - auto-detect engine
-                "none"      - ไม่ใช้ OCR (default)
-                "python"    - ใช้ Python OCR library (pytesseract)
-            lang: รหัสภาษา ("eng", "tha", "eng+tha")
-            cli_path: ที่อยู่ anydoc CLI (None = auto-detect)
-        """
-        self.ocr_backend = ocr_backend
-        self.lang = lang
-        self.cli_path = cli_path or shutil.which("anydoc")
+    def __init__(self, ocr: Optional[Callable[[bytes, int], str]] = None):
+        self.ocr = ocr
 
     def convert(self, file_path: str | Path) -> str:
-        """แปลงเอกสารเป็น Markdown
-
-        Raises:
-            FileNotFoundError: ไฟล์หรือ CLI ไม่อยู่
-            anydoc.UnsupportedError: แปลงไม่ได้ (เช่น scanned PDF โดยไม่มี OCR)
-            RuntimeError: การทำงานล้มเหลว
-        """
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        # ไม่ใช่ PDF → แปลงตรงๆ
-        if file_path.suffix.lower() != ".pdf":
-            return anydoc.to_markdown(str(file_path))
-
-        # PDF: ลองแปลงก่อน ถ้าต้องใช้ OCR ค่อย fallback
-        try:
-            return anydoc.to_markdown(str(file_path))
-        except anydoc.UnsupportedError as e:
-            if "OCR" not in str(e) or self.ocr_backend == "none":
-                raise
-
-        # ต้องใช้ OCR
-        if self.ocr_backend == "python":
-            return self._ocr_python(file_path)
-        else:
-            return self._ocr_cli(file_path)
-
-    def _ocr_cli(self, pdf_path: Path) -> str:
-        """ใช้ anydoc CLI กับ --ocr flag"""
-        if not self.cli_path:
-            raise FileNotFoundError(
-                "anydoc CLI not found. Install: npm install -g @firecrawl/anydoc"
-            )
-        result = subprocess.run(
-            [self.cli_path, str(pdf_path), "--ocr", self.ocr_backend],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"anydoc CLI failed: {result.stderr.strip()}"
-            )
-        return result.stdout
-
-    def _ocr_python(self, pdf_path: Path) -> str:
-        """ใช้ pytesseract โดยตรง"""
-        import pytesseract
-        from PIL import Image
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            subprocess.run(
-                ["pdftoppm", "-png", "-r", "300",
-                 str(pdf_path), f"{tmpdir}/page"],
-                check=True,
-                capture_output=True,
-            )
-
-            parts = []
-            for png in sorted(Path(tmpdir).glob("page-*.png")):
-                img = Image.open(png)
-                text = pytesseract.image_to_string(img, lang=self.lang)
-                if text.strip():
-                    page_num = int(png.stem.split("-")[-1])
-                    parts.append(f"<!-- OCR: page {page_num} -->\n\n{text}")
-
-        if not parts:
-            raise RuntimeError("OCR extracted no text from any page")
-        return "\n\n".join(parts)
+        path = Path(file_path)
+        return self.convert_bytes(path.read_bytes(), anydoc.format_from_path(path))
 
     def convert_bytes(self, data: bytes, format: Optional[str] = None) -> str:
-        """แปลงจาก bytes"""
-        return anydoc.to_markdown_bytes(data, format)
+        return anydoc.to_markdown_with_ocr(data, format, self.ocr)
+
+
+def tesseract_ocr(lang: str = "eng") -> Callable[[bytes, int], str]:
+    import pytesseract
+    from PIL import Image
+
+    def recognize(image: bytes, page: int) -> str:
+        return pytesseract.image_to_string(Image.open(io.BytesIO(image)), lang=lang)
+
+    return recognize
 
 
 # ═══════════════════════════════════════════════════════
 # ตัวอย่างการใช้งาน
 # ═══════════════════════════════════════════════════════
 
-# 1. แปลงเอกสารทั่วไป (ไม่มี OCR)
-converter = AnydocConverter()
-md = converter.convert("report.docx")
+# 1. เอกสารทั่วไป (ไม่ต้อง OCR)
+md = AnydocConverter().convert("report.docx")
 
-# 2. แปลง PDF ที่อาจเป็น scanned + OCR ภาษาไทย
-converter = AnydocConverter(ocr_backend="python", lang="tha+eng")
+# 2. PDF ไทยที่อาจเป็น scan หรือฟอนต์เพี้ยน
+converter = AnydocConverter(ocr=tesseract_ocr("tha+eng"))
 md = converter.convert("scanned.pdf")
 
-# 3. ใช้ CLI กับ Tesseract
-converter = AnydocConverter(ocr_backend="tesseract")
-md = converter.convert("scanned.pdf")
-
-# 4. แปลงหลายไฟล์
-converter = AnydocConverter(ocr_backend="python", lang="tha+eng")
+# 3. แปลงทั้งโฟลเดอร์
 for pdf in Path(".").glob("*.pdf"):
     try:
-        md = converter.convert(pdf)
-        (pdf.with_suffix(".md")).write_text(md)
+        pdf.with_suffix(".md").write_text(converter.convert(pdf))
         print(f"✅ {pdf.name} → {pdf.stem}.md")
     except Exception as e:
         print(f"❌ {pdf.name}: {e}")
@@ -1127,34 +1003,21 @@ for pdf in Path(".").glob("*.pdf"):
 ### Python Dependencies Reference
 
 ```bash
-# พื้นฐาน (แปลงเอกสารทั่วไป)
+# พื้นฐาน (แปลงเอกสารทั่วไป + PDF ที่มี text layer)
 pip install firecrawl-anydoc
 
-# OCR ผ่าน Python (pytesseract)
+# OCR ด้วย Tesseract
 pip install firecrawl-anydoc pytesseract pillow
+brew install tesseract tesseract-lang       # macOS
+apt install tesseract-ocr tesseract-ocr-tha # Linux
 
-# PDF rendering (ต้องมี pdftoppm)
+# การ render หน้า PDF เป็นรูป (anydoc เรียก pdftoppm ให้เอง)
 brew install poppler          # macOS
 apt install poppler-utils     # Linux
-
-# หรือใช้ PyMuPDF แทน pdftoppm
-pip install PyMuPDF
 ```
 
-```python
-# ทางเลือก: ใช้ PyMuPDF แทน pdftoppm (ไม่ต้องลง poppler)
-import fitz  # PyMuPDF
-
-def render_pdf_with_pymupdf(pdf_bytes: bytes) -> list[bytes]:
-    """Render PDF pages to PNG using PyMuPDF"""
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    images = []
-    for page in doc:
-        pix = page.get_pixmap(dpi=300)
-        images.append(pix.tobytes("png"))
-    doc.close()
-    return images
-```
+ไม่ต้องลง PyMuPDF หรือเขียนโค้ด render เองอีกแล้ว — `to_markdown_with_ocr()`
+render เฉพาะหน้าที่ต้อง OCR ให้เรียบร้อยก่อนส่งเข้า callback
 
 ---
 

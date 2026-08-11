@@ -2,6 +2,7 @@
 
 import ast
 import io
+import shutil
 import unittest
 import zipfile
 from pathlib import Path
@@ -12,8 +13,14 @@ FIXTURES = Path(__file__).resolve().parents[2] / "tests" / "fixtures"
 OUTLINE = FIXTURES / "docx" / "handmade-outline.docx"
 RICH = FIXTURES / "docx" / "handmade-rich.docx"
 CSV = FIXTURES / "csv" / "sheet.csv"
+PDF = FIXTURES / "pdf" / "text.pdf"
 ENCRYPTED = FIXTURES / "malformed" / "encrypted--errors.odt"
 ZIPBOMB = FIXTURES / "abuse" / "zipbomb--errors.docx"
+
+# Pages are rendered by shelling out to poppler, which the OCR path skips
+# rather than fails without. The callback then never runs, so the tests that
+# watch it need the binary present.
+renders_pages = unittest.skipUnless(shutil.which("pdftoppm"), "pdftoppm is not on PATH")
 
 
 class AnydocTest(unittest.TestCase):
@@ -32,6 +39,41 @@ class AnydocTest(unittest.TestCase):
         with self.assertRaisesRegex(anydoc.ConvertError, "unrecognized file content"):
             anydoc.to_markdown_bytes(CSV.read_bytes())
         self.assertIn("| --- |", anydoc.to_markdown_bytes(CSV.read_bytes(), "csv"))
+
+    def test_to_markdown_with_ocr_converts_as_usual_without_an_engine(self):
+        data = PDF.read_bytes()
+        self.assertEqual(anydoc.to_markdown_with_ocr(data), anydoc.to_markdown_bytes(data))
+
+    @renders_pages
+    def test_the_ocr_callback_reads_a_rendered_page_and_its_text_is_kept(self):
+        seen = []
+
+        def recognize(image: bytes, page: int) -> str:
+            seen.append((image, page))
+            return f"recognized page {page}"
+
+        markdown = anydoc.to_markdown_with_ocr(PDF.read_bytes(), "pdf", recognize)
+
+        self.assertTrue(seen, "the fixture has a page with no text layer")
+        image, page = seen[0]
+        self.assertTrue(image.startswith(b"\x89PNG"))
+        self.assertGreaterEqual(page, 1)
+        self.assertIn(f"recognized page {page}", markdown)
+        # Recognizing a page adds to the document, it never replaces what the
+        # pages with a text layer of their own already said.
+        self.assertIn("# Fixture Document", markdown)
+
+    @renders_pages
+    def test_an_ocr_callback_that_raises_surfaces_its_own_exception(self):
+        def recognize(image: bytes, page: int) -> str:
+            raise RuntimeError("the OCR endpoint is down")
+
+        with self.assertRaisesRegex(RuntimeError, "the OCR endpoint is down"):
+            anydoc.to_markdown_with_ocr(PDF.read_bytes(), "pdf", recognize)
+
+    def test_an_ocr_argument_that_cannot_be_called_raises_type_error(self):
+        with self.assertRaisesRegex(TypeError, "ocr must be callable"):
+            anydoc.to_markdown_with_ocr(PDF.read_bytes(), "pdf", "tesseract")
 
     def test_to_document_exposes_the_document_model(self):
         document = anydoc.to_document(OUTLINE.read_bytes(), "docx")

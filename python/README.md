@@ -44,6 +44,29 @@ markdown = anydoc.to_markdown_bytes(data, "csv")
 document = anydoc.to_document(data)
 ```
 
+## Scanned PDFs
+
+A PDF carries its text in a text layer, which a scanned page does not have at all and which some producers garble — a subset font whose mapping turns a Thai tone mark into an ASCII `&`. `to_markdown_with_ocr` hands those pages, and only those pages, to an OCR backend you supply:
+
+```python
+import io
+
+import anydoc
+import pytesseract
+from PIL import Image
+
+
+def recognize(image: bytes, page: int) -> str:
+    return pytesseract.image_to_string(Image.open(io.BytesIO(image)), lang="eng+tha")
+
+
+markdown = anydoc.to_markdown_with_ocr(pdf_bytes, "pdf", recognize)
+```
+
+The callback takes the page rendered to PNG bytes and its 1-based number, and returns the text on it. Anything callable will do, so the backend is yours to pick: pytesseract as above, a function posting to a cloud OCR endpoint, a local model. Returning an empty string leaves the page as the text layer had it, and raising aborts the conversion with your exception rather than swallowing it.
+
+Pages whose text layer is trustworthy never reach the callback, so a mostly-digital PDF costs no more than `to_markdown_bytes` does. Rendering shells out to `pdftoppm` (`brew install poppler` / `apt install poppler-utils`); without it on `PATH`, pages are left as they are.
+
 ## Errors
 
 A conversion raises only when no meaningful Markdown could come out of the file. The exception type names what went wrong:

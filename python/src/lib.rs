@@ -1,10 +1,12 @@
 //! Python bindings for anydoc.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use pyo3::create_exception;
-use pyo3::exceptions::{PyException, PyValueError};
+use pyo3::exceptions::{PyException, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyBytes;
 
 mod document;
 
@@ -164,6 +166,89 @@ fn to_markdown_bytes(py: Python<'_>, data: Vec<u8>, format: Option<&str>) -> PyR
     py.detach(|| anydoc::to_markdown_bytes(&data, format)).map_err(|e| convert_error(py, e))
 }
 
+/// A Python callable standing in for an [`anydoc::OcrEngine`].
+///
+/// Every error the trait can return only skips a page, so an exception raised
+/// inside the callback would be swallowed and a mistyped callback would
+/// quietly produce a worse document. It is kept here instead and re-raised
+/// once the conversion returns, which is what a Python caller expects of a
+/// function it passed a callback to. A backend that wants a page skipped
+/// returns an empty string, which is a decision rather than an accident.
+struct PyOcr {
+    recognize: Py<PyAny>,
+    first_error: Mutex<Option<PyErr>>,
+}
+
+impl PyOcr {
+    fn take_error(self) -> Option<PyErr> {
+        self.first_error.into_inner().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl anydoc::OcrEngine for PyOcr {
+    fn recognize(&self, image: &[u8], page: usize) -> Result<String, anydoc::OcrError> {
+        // Called from inside `py.detach`, so the GIL has to be taken back.
+        Python::attach(|py| {
+            let called = self
+                .recognize
+                .call1(py, (PyBytes::new(py, image), page))
+                .and_then(|text| text.extract::<String>(py));
+            called.map_err(|e| {
+                let message = e.to_string();
+                let mut first = self.first_error.lock().unwrap_or_else(|e| e.into_inner());
+                first.get_or_insert(e);
+                anydoc::OcrError::Backend(message)
+            })
+        })
+    }
+}
+
+/// Convert an in-memory PDF to Markdown, recognizing the pages whose text
+/// layer is missing or untrustworthy with `ocr`.
+///
+/// `ocr` is called as `ocr(image, page)` with the page rendered to PNG bytes
+/// and its 1-based number, and returns the text on it. Anything callable will
+/// do — `pytesseract.image_to_string` behind a lambda, a method bound off a
+/// class, a function posting to a cloud OCR endpoint. Returning an empty
+/// string leaves the page as the text layer had it; raising aborts the whole
+/// conversion with that exception.
+///
+/// Only pages that need it are rendered and recognized: a page with a
+/// trustworthy text layer never reaches `ocr`, and without `ocr` this is
+/// `to_markdown_bytes`. Rendering shells out to `pdftoppm` (poppler-utils),
+/// so pages are silently left as they are when it is not on `PATH`.
+///
+/// Non-PDF formats ignore `ocr` entirely.
+#[pyfunction]
+#[pyo3(signature = (data, format=None, ocr=None))]
+fn to_markdown_with_ocr(
+    py: Python<'_>,
+    data: Vec<u8>,
+    format: Option<&str>,
+    ocr: Option<Py<PyAny>>,
+) -> PyResult<String> {
+    let format = format.map(parse_format).transpose()?;
+    let engine = match ocr {
+        Some(ocr) if !ocr.bind(py).is_callable() => {
+            return Err(PyTypeError::new_err(
+                "ocr must be callable as ocr(image: bytes, page: int) -> str",
+            ));
+        }
+        Some(ocr) => Some(PyOcr { recognize: ocr, first_error: Mutex::new(None) }),
+        None => None,
+    };
+
+    let engine_ref = engine.as_ref().map(|engine| engine as &dyn anydoc::OcrEngine);
+    let markdown = py.detach(|| anydoc::to_markdown_with_ocr(&data, format, engine_ref));
+
+    // The callback's own failure is the cause of anything that went wrong
+    // downstream of it, so it is raised ahead of the conversion error.
+    if let Some(error) = engine.and_then(PyOcr::take_error) {
+        return Err(error);
+    }
+    markdown.map_err(|e| convert_error(py, e))
+}
+
 /// Parse an in-memory document into the document model, which also carries
 /// the embedded assets. Without a format, it is detected from the content.
 ///
@@ -190,6 +275,7 @@ fn _anydoc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(format_from_path, m)?)?;
     m.add_function(wrap_pyfunction!(to_markdown, m)?)?;
     m.add_function(wrap_pyfunction!(to_markdown_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(to_markdown_with_ocr, m)?)?;
     m.add_function(wrap_pyfunction!(to_document, m)?)?;
     m.add_class::<document::Asset>()?;
     m.add_class::<document::Block>()?;

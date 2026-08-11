@@ -1,6 +1,7 @@
 # Hand-written stubs for the compiled module. `tests/test_anydoc.py` checks
 # they stay in step with what the module actually exports.
 import os
+from collections.abc import Callable
 from typing import Literal, final
 
 Format = Literal[
@@ -62,6 +63,28 @@ def to_markdown_bytes(data: bytes | bytearray, format: Format | None = None) -> 
     """Convert an in-memory document to Markdown. Without a format, it is
     detected from the content, which signature-less formats (CSV) have to
     name explicitly."""
+
+def to_markdown_with_ocr(
+    data: bytes | bytearray,
+    format: Format | None = None,
+    ocr: Callable[[bytes, int], str] | None = None,
+) -> str:
+    """Convert an in-memory PDF to Markdown, recognizing the pages whose text
+    layer is missing or untrustworthy with `ocr`.
+
+    `ocr` is called as `ocr(image, page)` with the page rendered to PNG bytes
+    and its 1-based number, and returns the text on it. Anything callable will
+    do — `pytesseract.image_to_string` behind a lambda, a method bound off a
+    class, a function posting to a cloud OCR endpoint. Returning an empty
+    string leaves the page as the text layer had it; raising aborts the whole
+    conversion with that exception.
+
+    Only pages that need it are rendered and recognized: a page with a
+    trustworthy text layer never reaches `ocr`, and without `ocr` this is
+    `to_markdown_bytes`. Rendering shells out to `pdftoppm` (poppler-utils),
+    so pages are silently left as they are when it is not on `PATH`.
+
+    Non-PDF formats ignore `ocr` entirely."""
 
 def to_document(data: bytes | bytearray, format: Format | None = None) -> Document:
     """Parse an in-memory document into the document model, which also
