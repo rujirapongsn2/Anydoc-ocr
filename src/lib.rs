@@ -6,6 +6,7 @@
 
 #![warn(missing_docs)]
 
+pub mod fields;
 pub mod model;
 
 mod error;
@@ -19,6 +20,7 @@ pub use error::ConvertError;
 // Re-export the OCR types so callers don't need to reach into `formats`.
 #[cfg(feature = "ocr-tesseract")]
 pub use formats::pdf::TesseractOcr;
+pub use formats::pdf::items::{Layout, PageLayout, PositionedText};
 pub use formats::pdf::ocr::{OcrEngine, OcrError};
 
 use render::markdown::document_to_markdown;
@@ -144,10 +146,12 @@ pub fn to_document(
 
 /// Convert a document to Markdown with optional OCR fallback for scanned PDFs.
 ///
-/// When the input is a PDF with pages that have no text layer (scanned or
-/// image-only), and `ocr_engine` is `Some`, those pages are rendered to images
-/// and run through the provided [`OcrEngine`]. Recognized text is inserted into
-/// the Markdown at the page boundary.
+/// When the input is a PDF with pages that have no usable text layer, and
+/// `ocr_engine` is `Some`, those pages are rendered to images and run through
+/// the provided [`OcrEngine`]. Recognized text is inserted into the Markdown
+/// at the page boundary. A page counts as unusable when it is scanned or
+/// image-only, or when its Thai text decoded through a broken embedded font
+/// mapping — text that extracts cleanly but with the wrong characters.
 ///
 /// For all non-PDF formats, the `ocr_engine` is ignored and the function
 /// behaves identically to [`to_markdown_bytes`].
@@ -170,6 +174,27 @@ pub fn to_markdown_with_ocr(
         return formats::pdf::to_markdown_with_ocr(bytes, ocr_engine);
     }
     Ok(document_to_markdown(&to_document(bytes, format)?))
+}
+
+/// Extract PDF text-item positions (the geometric plane), for template-bbox
+/// field mapping against a fixed-layout form (a tax filing with fixed boxes,
+/// for example).
+///
+/// Errors as [`ConvertError::Unsupported`] for anything but a PDF: other
+/// formats carry no on-page coordinate system to report. Pages with no
+/// native text layer (scanned or image-only) contribute nothing to the
+/// result; recover their text with [`to_markdown_with_ocr`], which does not
+/// currently report positions for OCR-recognized text.
+///
+/// See [`Layout`] for the coordinate space.
+pub fn pdf_layout(bytes: &[u8], format: impl Into<Option<Format>>) -> Result<Layout, ConvertError> {
+    let format = resolve_format(bytes, format.into())?;
+    if format != Format::Pdf {
+        return Err(ConvertError::Unsupported(format!(
+            "{format:?} has no page coordinate system: layout extraction is PDF-only"
+        )));
+    }
+    formats::pdf::items::extract_layout(bytes)
 }
 
 fn resolve_format(bytes: &[u8], format: Option<Format>) -> Result<Format, ConvertError> {
