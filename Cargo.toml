@@ -19,6 +19,7 @@ include = ["/src", "/examples/convert.rs", "/README.md", "/LICENSE"]
 
 [dev-dependencies]
 insta = "1"
+serde_json = "1"
 sha2 = "0.11"
 
 [dependencies]
@@ -32,21 +33,18 @@ pdf-inspector = "0.1.7"
 quick-xml = "0.41.0"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
-# tempfile is a build-time dependency of the ocr-tesseract feature, but
-# placing it here keeps the default build unchanged (it compiles fast and
-# is only referenced behind a feature gate).
-tempfile = { version = "3", optional = true }
+# serde backs the `json` feature; derives only, so the default build never
+# pulls it in.
+serde = { version = "1", features = ["derive"], optional = true }
 
 [features]
 default = []
-# OCR fallback for scanned/image-only PDFs.
-# Enables the OcrEngine trait and the TesseractOcr backend.
+# The built-in Tesseract backend. The OcrEngine trait and page rendering are
+# always available, so a custom or cloud backend needs no feature flag.
 # Requires: `brew install tesseract` (macOS) or `apt install tesseract-ocr` (Linux).
-ocr-tesseract = ["dep:tempfile"]
-# Reserved for future backends.
-ocr-paddle = []
-# Use pdf-inspector's native page renderer instead of shelling out to pdftoppm.
-pdf-render = []
+ocr-tesseract = []
+# Serialize the document model to JSON (serde `Serialize` derives).
+json = ["dep:serde"]
 
 [profile.release]
 lto = "thin"

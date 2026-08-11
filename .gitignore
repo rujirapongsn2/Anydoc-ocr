@@ -3,6 +3,8 @@
 # Digests of the local `samples/` corpus: they quote converted content, so they
 # stay local like the corpus itself. Regenerate with `cargo test -- --ignored`.
 /tests/snapshots/snapshots__sample__*
+# Real business documents used to check the OCR path by hand. They stay local.
+/tests/ocr-test/
 *.snap.new
 __pycache__/
 .venv/

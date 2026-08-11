@@ -1,7 +1,6 @@
 //! Tesseract OCR backend.
 //!
-//! Wraps the Tesseract OCR engine via the `tesseract-rs` crate.
-//! Requires the Tesseract system binary to be installed:
+//! Shells out to the `tesseract` command-line binary, which must be installed:
 //!
 //! - **macOS**: `brew install tesseract`
 //! - **Linux**: `apt install tesseract-ocr` / `dnf install tesseract`
@@ -10,7 +9,7 @@
 //! ## Example
 //!
 //! ```rust,ignore
-//! use anydoc::formats::pdf::ocr::TesseractOcr;
+//! use anydoc::TesseractOcr;
 //!
 //! let ocr = TesseractOcr::new("eng");  // language code
 //! let markdown = anydoc::to_markdown_with_ocr(
@@ -29,6 +28,8 @@ use super::ocr::{OcrEngine, OcrError};
 pub struct TesseractOcr {
     /// Tesseract language code string (e.g. "eng", "tha", "eng+tha").
     lang: String,
+    /// Page segmentation mode, or `None` for Tesseract's own default.
+    psm: Option<u8>,
 }
 
 impl TesseractOcr {
@@ -41,14 +42,22 @@ impl TesseractOcr {
     /// - `"chi_sim"` — Simplified Chinese
     /// - `"jpn"` — Japanese
     pub fn new(lang: &str) -> Self {
-        Self {
-            lang: lang.to_string(),
-        }
+        Self { lang: lang.to_string(), psm: None }
     }
 
     /// Convenience: English-only engine.
     pub fn english() -> Self {
         Self::new("eng")
+    }
+
+    /// Set Tesseract's page segmentation mode (`--psm`).
+    ///
+    /// The default auto mode can drop trailing lines on single-column scans;
+    /// `6` (uniform block of text) is the usual fix for forms and invoices.
+    /// Leave unset for multi-column documents.
+    pub fn with_psm(mut self, psm: u8) -> Self {
+        self.psm = Some(psm);
+        self
     }
 }
 
@@ -56,36 +65,27 @@ impl OcrEngine for TesseractOcr {
     fn recognize(&self, image: &[u8], _page: usize) -> Result<String, OcrError> {
         use std::process::Command;
 
-        // Write the PNG to a unique temp file via tempfile crate.
-        // NamedTempFile provides RAII cleanup — the file is removed on drop
-        // even if an error occurs, and the name is unpredictable (mitigates
-        // symlink attacks and thread collisions).
-        let mut tmp_file = tempfile::NamedTempFile::new()
-            .map_err(|e| OcrError::Backend(format!("temp file create failed: {e}")))?;
+        // Removed with everything in it on drop, error paths included.
+        let dir = super::tempdir::TempDir::new("anydoc-tesseract")
+            .map_err(|e| OcrError::Backend(format!("temp dir create failed: {e}")))?;
 
-        use std::io::Write;
-        tmp_file
-            .write_all(image)
+        let img_path = dir.path().join("page.png");
+        std::fs::write(&img_path, image)
             .map_err(|e| OcrError::Backend(format!("temp file write failed: {e}")))?;
 
-        let img_path = tmp_file.path().to_str().ok_or_else(|| {
-            OcrError::Backend("temp image path is not valid UTF-8".into())
-        })?;
+        let img_path = img_path
+            .to_str()
+            .ok_or_else(|| OcrError::Backend("temp image path is not valid UTF-8".into()))?;
 
-        // Invoke: tesseract <image> stdout -l <lang>
-        let output = Command::new("tesseract")
-            .args([
-                img_path,
-                "stdout", // output to stdout
-                "-l",
-                &self.lang,
-            ])
-            .output()
-            .map_err(|_e| {
-                OcrError::NotConfigured
-            })?;
+        // Invoke: tesseract <image> stdout -l <lang> [--psm <n>]
+        let mut command = Command::new("tesseract");
+        command.args([img_path, "stdout", "-l", &self.lang]);
+        if let Some(psm) = self.psm {
+            command.args(["--psm", &psm.to_string()]);
+        }
+        let output = command.output().map_err(|_e| OcrError::NotConfigured)?;
 
-        // NamedTempFile is dropped here, cleaning up the temp image.
+        // `dir` is dropped at the end of the function, taking the PNG with it.
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

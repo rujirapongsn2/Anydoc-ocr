@@ -7,15 +7,22 @@
 //!
 //! ## When OCR runs
 //!
-//! OCR is **only** invoked for pages pdf-inspector flags as needing it. Pages
-//! with an embedded text layer are never touched, so the fast path stays
-//! fast. This keeps the zero-overhead promise: if you don't pass an engine,
-//! the behavior is identical to anydoc without OCR.
+//! OCR is **only** invoked for pages pdf-inspector flags as needing it, plus
+//! pages whose Thai text decoded through a broken font mapping. Pages with a
+//! trustworthy text layer are never touched, so the fast path stays fast.
+//! This keeps the zero-overhead promise: if you don't pass an engine, the
+//! behavior is identical to anydoc without OCR.
+//!
+//! ## Rendering
+//!
+//! [`render_page`] rasterizes a page with `pdftoppm` (poppler-utils) and is
+//! available in every build — a custom or cloud backend needs no anydoc
+//! feature flag, only `pdftoppm` on `PATH`.
 //!
 //! ## Implementing a custom backend
 //!
 //! ```rust,ignore
-//! use anydoc::formats::pdf::ocr::{OcrEngine, OcrError};
+//! use anydoc::{OcrEngine, OcrError};
 //!
 //! struct MyOcr;
 //!
@@ -32,9 +39,9 @@
 //! Anydoc provides optional feature-flagged backends so you don't have to
 //! roll your own:
 //!
-//! - **`ocr-tesseract`** — wraps the [Tesseract] engine via the `tesseract-rs`
-//!   crate. Requires the Tesseract system binary (`brew install tesseract` /
-//!   `apt install tesseract-ocr`). Low resource, good quality, 100+ languages.
+//! - **`ocr-tesseract`** — shells out to the [Tesseract] command-line binary
+//!   (`brew install tesseract` / `apt install tesseract-ocr`). Low resource,
+//!   good quality, 100+ languages.
 //!
 //! [pdf-inspector]: https://github.com/firecrawl/pdf-inspector
 //! [Tesseract]: https://github.com/tesseract-ocr/tesseract
@@ -80,52 +87,34 @@ pub trait OcrEngine: Send + Sync {
 
 /// Render a single PDF page to a PNG image at 300 DPI.
 ///
-/// This uses pdf-inspector's rendering API when available. If the crate does
-/// not yet expose page rendering, this falls back to the external `pdftoppm`
-/// binary via [`render_page_via_pdftoppm`].
+/// pdf-inspector extracts text but does not rasterize pages, so this shells
+/// out to the `pdftoppm` binary (poppler-utils). `page_num` is 1-based.
+///
+/// Available in every build, feature flags included: rendering is what feeds
+/// an [`OcrEngine`], so gating it would leave a custom or cloud backend with
+/// nothing to recognize. [`OcrError::NotConfigured`] when `pdftoppm` is not
+/// on `PATH`.
 pub fn render_page(pdf_bytes: &[u8], page_num: usize) -> Result<Vec<u8>, OcrError> {
-    // Try pdf-inspector's native renderer first.
-    #[cfg(feature = "pdf-render")]
-    {
-        if let Ok(img) = pdf_inspector::render_page_mem(pdf_bytes, page_num, 300) {
-            return Ok(img);
-        }
-    }
-
-    // Fallback: shell out to pdftoppm (poppler-utils).
     render_page_via_pdftoppm(pdf_bytes, page_num)
 }
 
-/// Render a page by writing a temp PDF into a **unique** temp directory and
+/// Render a page by writing a temp PDF into a private temp directory and
 /// invoking `pdftoppm -png -r 300`.
-///
-/// Uses [`tempfile::TempDir`] so that:
-/// - filenames are unpredictable (mitigates TOCTOU / symlink attacks)
-/// - the entire directory is cleaned up automatically when dropped (RAII),
-///   even on error paths — no manual `remove_file` needed
-/// - concurrent threads never collide on the same temp path
-#[cfg(feature = "ocr-tesseract")]
 fn render_page_via_pdftoppm(pdf_bytes: &[u8], page_num: usize) -> Result<Vec<u8>, OcrError> {
-    use std::io::Write;
     use std::process::Command;
 
-    // Create a unique temp directory — auto-removed on drop, even on error.
-    let dir = tempfile::TempDir::new()
+    // Removed with everything in it on drop, error paths included.
+    let dir = super::tempdir::TempDir::new("anydoc-render")
         .map_err(|e| OcrError::Backend(format!("temp dir create failed: {e}")))?;
 
-    let pdf_path = dir.path().join("input.pdf");
-
     // Write the full PDF; pdftoppm can extract single pages via -f / -l.
-    {
-        let mut f = std::fs::File::create(&pdf_path)
-            .map_err(|e| OcrError::Backend(format!("temp file create failed: {e}")))?;
-        f.write_all(pdf_bytes)
-            .map_err(|e| OcrError::Backend(format!("temp file write failed: {e}")))?;
-    }
+    let pdf_path = dir.path().join("input.pdf");
+    std::fs::write(&pdf_path, pdf_bytes)
+        .map_err(|e| OcrError::Backend(format!("temp file write failed: {e}")))?;
 
-    let pdf_str = pdf_path.to_str().ok_or_else(|| {
-        OcrError::Backend("temp PDF path is not valid UTF-8".into())
-    })?;
+    let pdf_str = pdf_path
+        .to_str()
+        .ok_or_else(|| OcrError::Backend("temp PDF path is not valid UTF-8".into()))?;
     let png_prefix = dir.path().join("page").to_string_lossy().into_owned();
 
     let output = Command::new("pdftoppm")
@@ -155,16 +144,14 @@ fn render_page_via_pdftoppm(pdf_bytes: &[u8], page_num: usize) -> Result<Vec<u8>
 
     // pdftoppm names output files <prefix>-NN.png (zero-padded page number).
     // We scan our private temp dir, so any .png found is ours.
-    let entries = std::fs::read_dir(dir.path()).map_err(|e| {
-        OcrError::Backend(format!("temp dir read failed: {e}"))
-    })?;
+    let entries = std::fs::read_dir(dir.path())
+        .map_err(|e| OcrError::Backend(format!("temp dir read failed: {e}")))?;
 
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("png") {
-            let png = std::fs::read(&path).map_err(|e| {
-                OcrError::Backend(format!("png read failed: {e}"))
-            })?;
+            let png = std::fs::read(&path)
+                .map_err(|e| OcrError::Backend(format!("png read failed: {e}")))?;
             // TempDir drop cleans up everything, including the PDF and PNG.
             return Ok(png);
         }
@@ -176,12 +163,3 @@ fn render_page_via_pdftoppm(pdf_bytes: &[u8], page_num: usize) -> Result<Vec<u8>
     )))
     // `dir` is dropped here, cleaning up all temp files.
 }
-
-/// Non-feature-gated fallback: returns NotConfigured.
-/// This exists so the function symbol is always available for the caller
-/// in `render_page` even when `ocr-tesseract` is not enabled.
-#[cfg(not(feature = "ocr-tesseract"))]
-fn render_page_via_pdftoppm(_pdf_bytes: &[u8], _page_num: usize) -> Result<Vec<u8>, OcrError> {
-    Err(OcrError::NotConfigured)
-}
-
