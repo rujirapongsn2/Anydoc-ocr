@@ -2,6 +2,7 @@ use crate::model::Block;
 
 /// The marker family a list level uses in the source document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "json", derive(serde::Serialize), serde(rename_all = "camelCase"))]
 pub enum MarkerKind {
     /// Unordered.
     Bullet,
@@ -93,6 +94,7 @@ fn roman(mut n: u64) -> String {
 /// the frontends (`shared::list`), which split runs whenever the list
 /// instance or marker kind changes.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "json", derive(serde::Serialize))]
 pub struct List {
     /// The marker family every item in this run uses.
     pub marker: MarkerKind,
@@ -112,15 +114,18 @@ impl List {
 /// One item of a [`List`], which may hold nested blocks including further
 /// lists.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "json", derive(serde::Serialize), serde(rename_all = "camelCase"))]
 pub struct ListItem {
     /// The item's content.
     pub blocks: Vec<Block>,
     /// Checkbox state for a task list item; `None` when the item carries no
     /// checkbox.
+    #[cfg_attr(feature = "json", serde(skip_serializing_if = "Option::is_none"))]
     pub checked: Option<bool>,
     /// Literal marker text that overrides the level marker when the source
     /// number text cannot be reproduced from `marker` + position alone
     /// (composite number text such as `1-a)`).
+    #[cfg_attr(feature = "json", serde(skip_serializing_if = "Option::is_none"))]
     pub marker_label: Option<String>,
 }
 

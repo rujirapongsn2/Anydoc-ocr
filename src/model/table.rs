@@ -9,6 +9,7 @@ use std::collections::HashMap;
 /// back at its origin. Frontends construct grids through one internal builder
 /// that enforces this, so a `Table` handed to a consumer always holds.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "json", derive(serde::Serialize), serde(rename_all = "camelCase"))]
 pub struct Table {
     /// Rows of slots. Rows may differ in length when the source is ragged.
     pub grid: Vec<Vec<CellSlot>>,
@@ -20,6 +21,7 @@ pub struct Table {
 
 /// What a table is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "json", derive(serde::Serialize), serde(rename_all = "camelCase"))]
 pub enum TableKind {
     /// A real data table.
     #[default]
@@ -31,11 +33,17 @@ pub enum TableKind {
 
 /// One position in a [`Table::grid`]: either a cell or the shadow of one.
 #[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "json",
+    derive(serde::Serialize),
+    serde(tag = "kind", content = "value", rename_all = "camelCase")
+)]
 pub enum CellSlot {
     /// The cell itself, holding the content and the span extents.
     Origin(Cell),
     /// A position swallowed by a span, pointing back at the origin that
     /// covers it.
+    #[cfg_attr(feature = "json", serde(rename_all = "camelCase"))]
     Covered {
         /// Row of the covering origin.
         origin_row: usize,
@@ -46,6 +54,7 @@ pub enum CellSlot {
 
 /// A table cell and the extent it spans.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "json", derive(serde::Serialize), serde(rename_all = "camelCase"))]
 pub struct Cell {
     /// The cell's content.
     pub blocks: Vec<Block>,

@@ -7,6 +7,11 @@ pub type AnchorId = String;
 
 /// Where a link points.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "json",
+    derive(serde::Serialize),
+    serde(tag = "kind", content = "value", rename_all = "camelCase")
+)]
 pub enum LinkTarget {
     /// Absolute URL with a scheme.
     External(String),
@@ -29,6 +34,11 @@ impl LinkTarget {
 
 /// Where an image's bytes live.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "json",
+    derive(serde::Serialize),
+    serde(tag = "kind", content = "value", rename_all = "camelCase")
+)]
 pub enum ImageSource {
     /// Absolute URL with a scheme.
     External(String),

@@ -1,13 +1,22 @@
 use crate::model::{AnchorId, ImageSource, LinkTarget, Style};
 
 /// One span of inline content.
+///
+/// JSON uses adjacent tagging (`{"kind": ..., "value": ...}`), matching
+/// [`Block`](crate::model::Block).
 #[derive(Debug, Clone)]
+#[cfg_attr(
+    feature = "json",
+    derive(serde::Serialize),
+    serde(tag = "kind", content = "value", rename_all = "camelCase")
+)]
 pub enum Inline {
     /// Styled text. Runs are split wherever the style changes.
     Text {
         /// The text itself.
         text: String,
         /// The character style covering all of it.
+        #[cfg_attr(feature = "json", serde(skip_serializing_if = "Style::is_plain"))]
         style: Style,
     },
     /// A hyperlink wrapping its own inline content.
