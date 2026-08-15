@@ -26,6 +26,22 @@ pub mod tesseract;
 #[cfg(feature = "ocr-tesseract")]
 pub use tesseract::TesseractOcr;
 
+#[cfg(feature = "ocr-mistral")]
+pub mod mistral;
+
+#[cfg(feature = "ocr-mistral")]
+pub use mistral::MistralOcr;
+
+#[cfg(feature = "ocr-softnix")]
+pub mod softnix;
+
+#[cfg(feature = "ocr-softnix")]
+pub use softnix::SoftnixOcr;
+
+pub mod fallback;
+
+pub use fallback::FallbackOcr;
+
 use crate::error::ConvertError;
 use pdf_inspector::markdown::MarkdownOptions;
 use pdf_inspector::types::ItemType;

@@ -36,6 +36,8 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 # serde backs the `json` feature; derives only, so the default build never
 # pulls it in.
 serde = { version = "1", features = ["derive"], optional = true }
+# JSON parsing for the cloud OCR backends' responses (mistral, softnix).
+serde_json = { version = "1", optional = true }
 
 [features]
 default = []
@@ -43,6 +45,12 @@ default = []
 # always available, so a custom or cloud backend needs no feature flag.
 # Requires: `brew install tesseract` (macOS) or `apt install tesseract-ocr` (Linux).
 ocr-tesseract = []
+# Mistral OCR cloud backend (MISTRAL_API_KEY). Pulls serde_json for response
+# parsing. Requires `curl` on PATH at runtime.
+ocr-mistral = ["dep:serde_json"]
+# Softnix OCR cloud backend (SOFTNIX_OCR_BASE_URL + SOFTNIX_OCR_TOKEN).
+# Job-based API; polls until completed. Requires `curl` on PATH at runtime.
+ocr-softnix = ["dep:serde_json"]
 # Serialize the document model to JSON (serde `Serialize` derives).
 json = ["dep:serde"]
 

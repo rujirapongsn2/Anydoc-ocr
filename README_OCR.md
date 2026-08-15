@@ -262,10 +262,54 @@ anydoc scanned_document.pdf
 
 ---
 
-## 🔄 Changing OCR Backends
+### Changing OCR Backends
 
 Anydoc ใช้ `OcrEngine` trait ทำให้สลับ backend ได้โดยไม่ต้องแก้ core engine
 แค่ implement trait ตัวเดียวแล้วส่งเข้า `to_markdown_with_ocr()`
+
+### Built-in cloud backends (feature flags)
+
+ตั้งแต่เวอร์ชันนี้ anydoc มี cloud backend ในตัว 2 ตัว + fallback chain:
+
+```toml
+[dependencies]
+anydoc = { version = "0.1.7", features = ["ocr-softnix", "ocr-mistral", "ocr-tesseract"] }
+```
+
+| Feature | Backend | Env vars | หมายเหตุ |
+|---|---|---|---|
+| `ocr-softnix` | `SoftnixOcr` | `SOFTNIX_OCR_BASE_URL` + `SOFTNIX_OCR_TOKEN` (+ `SOFTNIX_OCR_INSECURE_TLS=true` สำหรับ self-signed) | job-based: submit → poll `/status` → `/result` |
+| `ocr-mistral` | `MistralOcr` | `MISTRAL_API_KEY` | base64 data URI → `pages[0].markdown` |
+| `ocr-tesseract` | `TesseractOcr` | — (ต้องมี binary `tesseract`) | local, ฟรี |
+
+### FallbackOcr — chain สำหรับเอกสารไทย
+
+```rust
+use anydoc::FallbackOcr;
+
+// Softnix -> Mistral -> Tesseract(tha+eng); ตัวที่ไม่มี credentials
+// จะถูกข้ามพร้อม log warn อัตโนมัติ
+let ocr = FallbackOcr::thai_pipeline()?;
+let md = anydoc::to_markdown_with_ocr(&bytes, None, Some(&ocr))?;
+```
+
+กติกา: engine ที่ล้ม หรือคืนข้อความว่าง จะถูกข้ามไปตัวถัดไปทันที
+ตัวแรกที่สำเร็จ (ข้อความไม่ว่าง) ชนะ — หน้านั้นไม่ยิงตัวถัดไปประหยัดโควตา
+
+ตัวอย่างรันจริง:
+
+```bash
+cargo build --release --example ocr_fallback \
+  --features "ocr-softnix ocr-mistral ocr-tesseract"
+
+SOFTNIX_OCR_BASE_URL=https://111.223.37.41:9001 \
+SOFTNIX_OCR_TOKEN=ocr_ai... \
+SOFTNIX_OCR_INSECURE_TLS=true \
+./target/release/examples/ocr_fallback scanned.pdf
+```
+
+ทดสอบแล้วกับ image-only PDF ภาษาไทย: chain ลดเหลือ `[softnix, tesseract]`
+เมื่อไม่มี MISTRAL_API_KEY และ Softnix คืน Markdown ไทยสำเร็จใน step เดียว
 
 ### หลักการ
 

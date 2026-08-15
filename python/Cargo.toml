@@ -17,3 +17,8 @@ anydoc = { path = ".." }
 # abi3-py310 pins the stable ABI: one wheel per platform covers every
 # CPython from 3.10 up.
 pyo3 = { version = "0.29", features = ["abi3-py310", "extension-module"] }
+
+# Forward the OCR feature to the anydoc crate so that
+# `maturin develop --features ocr-tesseract` enables it.
+[features]
+ocr-tesseract = ["anydoc/ocr-tesseract"]

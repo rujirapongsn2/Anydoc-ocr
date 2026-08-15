@@ -18,6 +18,11 @@ mod shared;
 pub use error::ConvertError;
 
 // Re-export the OCR types so callers don't need to reach into `formats`.
+pub use formats::pdf::FallbackOcr;
+#[cfg(feature = "ocr-mistral")]
+pub use formats::pdf::MistralOcr;
+#[cfg(feature = "ocr-softnix")]
+pub use formats::pdf::SoftnixOcr;
 #[cfg(feature = "ocr-tesseract")]
 pub use formats::pdf::TesseractOcr;
 pub use formats::pdf::items::{Layout, PageLayout, PositionedText};
