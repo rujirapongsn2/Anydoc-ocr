@@ -133,7 +133,7 @@ let document = anydoc::to_document(&bytes, None)?;
 - **Content-based format detection.** The format is read from the bytes themselves (PDF header, RTF open group, OLE stream names, ZIP package mimetype), so mislabeled files still convert correctly.
 - **Fast.** Pure Rust, no ML models, no external services. Median conversion time is under 5ms per document.
 - **Bindings that stay out of the way.** Node.js conversion runs on the libuv thread pool and never blocks the event loop; Python releases the GIL so other threads keep running. TypeScript types and Python stubs ship with the packages.
-- **PDF support built in.** Text-based PDFs convert locally through [pdf-inspector](https://github.com/firecrawl/pdf-inspector), no OCR service required.
+- **PDF support built in.** Text-based PDFs convert locally through [pdf-inspector](https://github.com/firecrawl/pdf-inspector); scanned pages fall back to pluggable OCR backends (Softnix, Mistral, Tesseract) with an automatic fallback chain.
 - **Agent ready.** Ships as an [Agent Skill](#agent-skill): one `npx skills add firecrawl/anydoc` and any agent can read office documents.
 
 ## Supported formats
@@ -198,6 +198,60 @@ Format::from_path(Path::new("report.odt")); // Some(Format::Odt)
 ```
 
 The same three functions exist in Node (`formatFromBytes`, ...) and Python (`anydoc.format_from_bytes`, ...).
+
+## Scanned PDFs & OCR fallback
+
+Text-layer PDFs convert locally in milliseconds. Scanned/image-only pages — and pages whose Thai font decoded through a broken mapping — can be handed to an OCR backend through `to_markdown_with_ocr`. OCR runs **only** on the pages that need it; everything else stays on the fast path.
+
+Three built-in backends ship behind feature flags, plus a fallback chain that tries them in order:
+
+```toml
+[dependencies]
+anydoc = { version = "0.1.7", features = ["ocr-softnix", "ocr-mistral", "ocr-tesseract"] }
+```
+
+| Feature     | Backend         | Credentials (env)                                                                              | Notes                                        |
+| ----------- | --------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `ocr-softnix` | `SoftnixOcr`  | `SOFTNIX_OCR_BASE_URL`, `SOFTNIX_OCR_TOKEN`, optional `SOFTNIX_OCR_INSECURE_TLS=true` (self-signed) | Job-based V3 API: submit → poll → result. Best Thai accuracy. |
+| `ocr-mistral` | `MistralOcr`  | `MISTRAL_API_KEY`                                                                                | Base64 data URI → `pages[0].markdown`. Strong Markdown structure. |
+| `ocr-tesseract` | `TesseractOcr` | — (needs the `tesseract` binary)                                                             | Local, free, 100+ languages.                  |
+
+### Rust
+
+```rust
+use anydoc::FallbackOcr;
+
+// Softnix -> Mistral -> Tesseract("tha+eng"). Backends without credentials
+// are skipped with a warning; the first engine returning non-empty text wins.
+let ocr = FallbackOcr::thai_pipeline()?;
+let markdown = anydoc::to_markdown_with_ocr(&bytes, None, Some(&ocr))?;
+
+// Or a single engine:
+use anydoc::MistralOcr;
+let ocr = MistralOcr::from_env()?; // MISTRAL_API_KEY
+let markdown = anydoc::to_markdown_with_ocr(&bytes, None, Some(&ocr))?;
+```
+
+### CLI
+
+```bash
+cargo build --release --example ocr_fallback \
+  --features "ocr-softnix ocr-mistral ocr-tesseract"
+
+SOFTNIX_OCR_BASE_URL=... SOFTNIX_OCR_TOKEN=... SOFTNIX_OCR_INSECURE_TLS=true \
+MISTRAL_API_KEY=... \
+./target/release/examples/ocr_fallback scanned.pdf > scanned.md
+```
+
+### Python
+
+The OCR backend is a plain callback, so the same chain is easy to build yourself (`anydoc.to_markdown_with_ocr(data, "pdf", recognize)`); see [README_OCR.md](README_OCR.md) for ready-to-copy Softnix and Mistral callbacks, plus the full backend contract (empty string skips the page, raising aborts the job).
+
+### Behavior
+
+- An engine that fails, times out, or returns empty text is skipped; the next one is tried. A page keeps its text layer when every engine fails.
+- A short recognition is kept *alongside* a suspicious text layer rather than replacing it, so a broken backend can never delete a document.
+- Credentials are read from the environment; nothing is embedded in the binary.
 
 ## Errors
 
